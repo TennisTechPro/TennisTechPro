@@ -1,4 +1,3 @@
-import torch
 from scipy import signal
 import cv2
 import numpy as np

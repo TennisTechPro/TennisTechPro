@@ -174,8 +174,3 @@ def collect_group_datasets():
 
             output_path = f"keypoints/{motion}/{motion}_{idx}.csv" # Keypoints를 저장할 CSV 파일
             save_keypoints_to_csv(output_path, keypoints_list) # 하나의 motion에 대한 keypoint 리스트를 csv 파일에 저장
-
-
-if __name__ == '__main__':
-    # collect_datasets()
-    collect_group_datasets()

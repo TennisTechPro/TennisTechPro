@@ -1,35 +1,18 @@
-import argparse
 import cv2
 import imutils
 import time
 
 from court_detection import CourtDetector
-from detection import DetectionModel
+from object_tracking import Tracker
 from pose import PoseExtractor
 from action_recognition import ActionRecognition
 from ball_detection import BallDetector
 from utils import get_video_properties
 
-# parse parameters
-parser = argparse.ArgumentParser(description='Tennis Game Analysis')
-
-parser.add_argument("--input_video_path", type=str)
-parser.add_argument("--output_video_path", type=str, default="")
-parser.add_argument("--stickman", type=int, default=0)
-parser.add_argument("--minimap", type=int, default=0)
-parser.add_argument("--bounce", type=int, default=0)
-
-args = parser.parse_args()
-input_video_path = args.input_video_path
-output_video_path = args.output_video_path
-minimap = args.minimap
-bounce = args.bounce
-
-
 def merge(frame, image):
     frame_h, frame_w = frame.shape[:2]
 
-    width = frame_w // 4
+    width = int(frame_w // 4.5)
     resized = imutils.resize(image, width=width)
 
     img_h, img_w = resized.shape[:2]
@@ -39,8 +22,7 @@ def merge(frame, image):
 
     return frame
 
-
-def create_minimap(court_detector, player_detector, ball_detector, fps):
+def create_minimap(court_detector, tracker, ball_detector, fps):
     """
     Creates top view video of the gameplay
     """
@@ -54,18 +36,19 @@ def create_minimap(court_detector, player_detector, ball_detector, fps):
 
     # Marking players location on court
     frame_num = 0
-    smoothed_1, smoothed_2 = player_detector.calculate_feet_positions(court_detector)
+    smoothed_1, smoothed_2 = tracker.calculate_feet_positions(court_detector) # 선수들의 발 좌표 계산
     for feet_pos_1, feet_pos_2 in zip(smoothed_1, smoothed_2):
         frame = court.copy()
         if feet_pos_1[0] is not None:
-            frame = cv2.circle(frame, (int(feet_pos_1[0]), int(feet_pos_1[1])), 15, (255, 0, 0), -1)
+            frame = cv2.circle(frame, (int(feet_pos_1[0]), int(feet_pos_1[1])), 30, (255, 0, 255), -1) # 선수 1의 발 좌표를 미니맵에 표시
+            
         if feet_pos_2[0] is not None:
-            frame = cv2.circle(frame, (int(feet_pos_2[0]), int(feet_pos_2[1])), 15, (255, 0, 0), -1)
-        # frame = ball_detector.draw_ball_position_in_minimap(frame, court_detector, frame_num)
+            frame = cv2.circle(frame, (int(feet_pos_2[0]), int(feet_pos_2[1])), 30, (255, 255, 0), -1) # 선수 2의 발 좌표를 미니맵에 표시
+
+        frame = ball_detector.draw_ball_position_in_minimap(frame, court_detector, frame_num) # Ball의 좌표를 미니맵에 표시
         frame_num += 1
         out.write(frame)
     out.release()
-
 
 def add_minimap(output_video_path):
     video = cv2.VideoCapture('output/analysis.mp4')
@@ -106,75 +89,77 @@ def process(input_video_path, output_video_path):
 
     # Initialize
     court_detector = CourtDetector() # Court Detector
-    player_detector = DetectionModel() # Player detector
+    tracker = Tracker() # Player tracker
     pose_extractor = PoseExtractor() # Pose Extractor
-    # action_recognition = ActionRecognition() # Action Recognition
+    action_recognition = ActionRecognition() # Action Recognition
     ball_detector = BallDetector() # tracknet
 
     frame_num = 0 # frame counter
     frames = [] # Save all frame
 
-    # First Part: Court Line Detection, Object Detection, Pose Estimation, Ball Detection
+    # First Part: Object Tracking, Ball Detection
     while True:
         ret, frame = video.read()
-        frame_num += 1
-
+        if frame_num == 0:
+            print('Start!')
+            print('Detecting and Tracking the ball and players... ')
         if ret:
-            if frame_num == 1:
-                print('Start!')
-                print('Detecting the court and the players...')
-                print("Estimate player's pose...")
+            # Tracking two players
+            tracker.track(frame, frame_num)
+
+            # Detect ball
+            ball_detector.detect_ball(frame)
+
+        else:
+            break
+        frame_num += 1
+    video.release() # Video 획득 개체를 해제
+
+    # Second Part: Player Detection, Court Detection, Pose Estimation, Action Recognition
+    tracker.find_players_boxes()
+
+    video = cv2.VideoCapture(input_video_path)
+    frame_num = 0
+
+    while True:
+        ret, frame = video.read()
+        if ret:
+            if frame_num == 0:
+                print('Detecting the court...')
                 lines = court_detector.detect(frame)
             else:
                 # then track court
                 lines = court_detector.track_court(frame)
-
-            # Detect ball
-            frame = ball_detector.detect_ball_in_one_frame(frame, v_width, v_height)
             
-            # Detect two players
-            frame = player_detector.detect_bottom_player(frame, court_detector) # frame vs frame.copy()
-            frame = player_detector.detect_top_player(frame, court_detector) # frame vs frame.copy()
+            # Draw boxes on player's position
+            frame, p1_boxes, p2_boxes = tracker.mark_boxes(frame, frame_num)
 
-            # Estimate player's pose
-            player1_boxes, player2_boxes = player_detector.get_boxes()
-            frame = pose_extractor.extract_pose(frame, player1_boxes, player2_boxes)
+            # Pose Estimation
+            frame = pose_extractor.extract_pose(frame, p1_boxes, p2_boxes)
 
-            # Draw court line
+            # Action Recognition
+            frame = action_recognition.predict_players_motion(frame, frame_num, pose_extractor.p1_keypoints, pose_extractor.p2_keypoints)
+
+            # Draw court lines
             new_frame = court_detector.draw_court_lines(frame, lines)
             frames.append(new_frame)
-                
+
             analysis_video.write(new_frame)
         else:
             break
+        frame_num += 1
     video.release() # Video 획득 개체를 해제
-    analysis_video.release()
-
-    # Second Part: Pose Estimation, Action Recognition
-
+    analysis_video.release() # Video 획득 개체를 해제
 
     # Third Part: Processing ball coordinates
-    print('전처리 전 \n', ball_detector.xy_coordinates)
-    ball_detector.remove_outliers()
-    ball_detector.interpolate_coords()
-    # ball_detector.preprocessing_ball_coords()
-    print('전처리 후 \n', ball_detector.xy_coordinates)
+    ball_detector.preprocessing_ball_coords()
 
     # Fourth Part: Add minimap in video
-    create_minimap(court_detector, player_detector, ball_detector, fps) # minimap video를 생성
+    create_minimap(court_detector, tracker, ball_detector, fps) # minimap video를 생성
     add_minimap(output_video_path) # output video와 minimap video를 합친 하나의 video 생성
-    
-    # Measure processing time
-    end_time = time.time()
-    total_time = end_time - start_time
 
-    print('Finished!')
-    print(f'Analysis Time: {round(total_time)}s')
-    print('Total Frame: ', frame_num)
-    player_detector.print_counts()
-    pose_extractor.print_counts()
 
 if __name__ == '__main__':
-    input_video_path = 'test/video_input6.mp4'
-    output_video_path = 'output/output.mp4'
+    input_video_path = 'test/video_input1.mp4'
+    output_video_path = 'output/video1/output.mp4'
     process(input_video_path, output_video_path)

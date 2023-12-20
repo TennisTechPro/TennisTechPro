@@ -4,7 +4,7 @@ from keras.models import load_model
 
 class ActionRecognition:
     def __init__(self):
-        self.model = load_model('models/gru/gru80_seq36.h5', compile=False)
+        self.model = load_model('models/gru80_seq36.h5', compile=False)
         self.model.compile()
         self.seq_length = 36
         self.motions = ['backhand', 'forehand', 'serve/smash', 'volley']
